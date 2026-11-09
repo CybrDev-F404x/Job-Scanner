@@ -1,14 +1,23 @@
 import os
 import json
+import time
 import smtplib
+from typing import Optional
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pydantic import BaseModel
 from google import genai
-from google.genai import types
 
 # Lee la clave inyectada por el entorno
 api_key = os.getenv("GEMINI_API_KEY")
+
+# Lista de modelos disponibles en el tier gratuito en orden de prioridad (fallback automatico)
+FALLBACK_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
+]
 
 # --- 1. MODELOS DE DATOS ---
 class JobPosting(BaseModel):
@@ -16,7 +25,7 @@ class JobPosting(BaseModel):
     company: str
     location: str
     salary: str
-    salary_below_30k: bool
+    salary_below_30k: Optional[bool] = None
     experience_requirements: str
     key_technologies: str
     url: str
@@ -24,11 +33,10 @@ class JobPosting(BaseModel):
 class JobList(BaseModel):
     vacancies: list[JobPosting]
 
-# --- 2. CONSULTA A GEMINI ---
+# --- 2. CONSULTA A GEMINI CON FALLBACK DE MODELOS ---
 def search_jobs(api_key: str) -> list[JobPosting]:
     client = genai.Client(api_key=api_key)
 
-    
     prompt = (
         "Search for current, active job vacancies in the Dominican Republic, "
         "prioritizing Santo Domingo and remote or hybrid roles open to candidates "
@@ -99,21 +107,38 @@ def search_jobs(api_key: str) -> list[JobPosting]:
         "output format. If no active vacancies are confirmed, return an empty list."
     )
 
+    last_error = None
 
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            response_mime_type="application/json",
-            response_schema=JobList,
-            temperature=0.1,
-        ),
+    for model_name in FALLBACK_MODELS:
+        try:
+            print(f"🤖 Intentando consulta con el modelo: {model_name}...")
+            interaction = client.interactions.create(
+                model=model_name,
+                input=prompt,
+                tools=[{"type": "google_search"}],
+                response_format={
+                    "type": "text",
+                    "mime_type": "application/json",
+                    "schema": JobList.model_json_schema(),
+                },
+            )
+
+            if not interaction.output_text:
+                raise ValueError(f"El modelo {model_name} devolvió una respuesta vacía.")
+
+            parsed = JobList.model_validate_json(interaction.output_text)
+            print(f"✅ Respuesta obtenida exitosamente con {model_name}.")
+            return parsed.vacancies
+
+        except Exception as e:
+            last_error = e
+            print(f"⚠️ Falló el modelo {model_name} (cuota agotada o sin respuesta): {e}")
+            print("🔄 Cambiando al siguiente modelo disponible...")
+            time.sleep(2)
+
+    raise RuntimeError(
+        f"❌ Todos los modelos de Gemini fallaron. Último error: {last_error}"
     )
-
-    # Validar y cargar con Pydantic
-    parsed = JobList.model_validate_json(response.text)
-    return parsed.vacancies
 
 # --- 3. GESTION DE ESTADO (DEDUPLICACION) ---
 def filter_new_vacancies(vacancies: list[JobPosting], history_file="seen_jobs.json") -> list[JobPosting]:
