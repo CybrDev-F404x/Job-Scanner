@@ -26,7 +26,7 @@ jobs:
 
       - name: 3. Instalar librerías
         run: |
-          pip install google-genai pydantic
+          pip install -r requirements.txt
 
       - name: 4. Ejecutar el script
         env:
