@@ -2,9 +2,9 @@ name: Job Hunter RD Automation
 
 on:
   schedule:
-    # Corre lunes y jueves a las 12:00 UTC (8:00 AM hora de República Dominicana)
+    # Corre lunes y jueves a las 12:00 UTC (8:00 AM hora de RD)
     - cron: '0 12 * * 1,4'
-  workflow_dispatch: # Habilita un botón "Run workflow" para probarlo manualmente en cualquier momento
+  workflow_dispatch: # Habilita un boton "Run workflow" para probarlo manualmente en cualquier momento
 
 # Permisos para que el bot pueda hacer commit y push del historial
 permissions:
@@ -34,7 +34,7 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
-        run: python Job_scanner.py
+        run: python job_scanner.py
 
       - name: 5. Guardar historial si hubo cambios
         run: |
