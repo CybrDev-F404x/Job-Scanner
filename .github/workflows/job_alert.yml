@@ -1,0 +1,45 @@
+name: Job Hunter RD Automation
+
+on:
+  schedule:
+    # Corre lunes y jueves a las 12:00 UTC (8:00 AM hora de República Dominicana)
+    - cron: '0 12 * * 1,4'
+  workflow_dispatch: # Habilita un botón "Run workflow" para probarlo manualmente en cualquier momento
+
+# Permisos para que el bot pueda hacer commit y push del historial
+permissions:
+  contents: write
+
+jobs:
+  run-hunter:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar entorno Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip' # Acelera las ejecuciones posteriores
+
+      - name: 3. Instalar librerías
+        run: |
+          pip install google-genai pydantic
+
+      - name: 4. Ejecutar el script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: python job_scanner.py
+
+      - name: 5. Guardar historial si hubo cambios
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_jobs.json
+          # Solo comitea si seen_jobs.json cambió realmente
+          git diff --staged --quiet || (git commit -m "chore: actualizar historial de vacantes notificadas [skip ci]" && git push)
