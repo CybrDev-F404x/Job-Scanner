@@ -101,7 +101,7 @@ def search_jobs(api_key: str) -> list[JobPosting]:
 
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
