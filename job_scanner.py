@@ -13,10 +13,10 @@ api_key = os.getenv("GEMINI_API_KEY")
 
 # Lista de modelos disponibles en el tier gratuito en orden de prioridad (fallback automatico)
 FALLBACK_MODELS = [
-    "gemini-3.8-flash",
+    "gemini-2.5-flash-lite",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-3.1-pro-preview",
+
 ]
 
 # --- 1. MODELOS DE DATOS ---
