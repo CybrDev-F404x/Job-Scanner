@@ -7,16 +7,13 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pydantic import BaseModel
 from google import genai
+from google.genai import types
 
-# Lee la clave inyectada por el entorno
-api_key = os.getenv("GEMINI_API_KEY")
-
-# Lista de modelos disponibles en el tier gratuito en orden de prioridad (fallback automatico)
+# Modelos oficiales soportados en el tier gratuito
 FALLBACK_MODELS = [
-    "gemini-2.5-flash-lite",
+    "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-
 ]
 
 # --- 1. MODELOS DE DATOS ---
@@ -37,55 +34,56 @@ class JobList(BaseModel):
 def search_jobs(api_key: str) -> list[JobPosting]:
     client = genai.Client(api_key=api_key)
 
+    # String multilinea limpio y valido sin operadores sueltos
     prompt = (
-    "Target: Active software and technology job vacancies in Dominican Republic "
-    "(priority: Santo Domingo, Remote/Hybrid open to DR residents).\n"
-    "Candidate profile: Junior/Entry-level developer with skills in Python, FastAPI, "
-    "PostgreSQL, Docker, Power Platform, and AI-assisted tooling. "
-    "Accept roles requiring 0 to 3 years experience (evaluate fit via projects/skills).\n\n"
-    "Target Roles by Priority:\n"
-    "- P1 (Software Dev): Junior Software/Backend/Python/Full Stack/Web/API Developer, Odoo/ERP/Integration Dev.\n"
-    "- P2 (Automation/Data/AI): Automation Dev, RPA, Power Platform Specialist, QA Automation, Junior Data/AI Eng.\n"
-    "- P3 (Adjacent IT): Implementation Specialist, Application Support, Junior Systems Analyst.\n\n"
-    "Search Sources & Verification:\n"
-    "- Search: LinkedIn, Computrabajo, Aldaba, Indeed, Get on Board, and official company portals.\n"
-    "- Verify: Must be active, verifiable postings with valid application URLs. Consolidate duplicates. Never fabricate listings.\n\n"
-    "Evaluation & Salary Rules:\n"
-    "- Minimum target: RD$30,000/month. Set salary_below_30k=true ONLY if confirmed < RD$30,000; "
-    "false if >= RD$30,000; null if undisclosed/unverified. Do not exclude unlisted salaries.\n"
-    "- Recommendation values: 'Apply', 'Consider applying', or 'Low priority'.\n"
-    "- Rank output by software relevance, candidate fit, and career growth potential.\n"
-    "- Return an empty list if no verified active positions match."
-)
+        "Target: Active software and technology job vacancies in Dominican Republic "
+        "(priority: Santo Domingo, Remote/Hybrid open to DR residents).\n"
+        "Candidate profile: Junior/Entry-level developer with skills in Python, FastAPI, "
+        "PostgreSQL, Docker, Power Platform, and AI-assisted tooling. "
+        "Accept roles requiring 0 to 3 years experience (evaluate fit via projects/skills).\n\n"
+        "Target Roles by Priority:\n"
+        "- P1 (Software Dev): Junior Software/Backend/Python/Full Stack/Web/API Developer, Odoo/ERP/Integration Dev.\n"
+        "- P2 (Automation/Data/AI): Automation Dev, RPA, Power Platform Specialist, QA Automation, Junior Data/AI Eng.\n"
+        "- P3 (Adjacent IT): Implementation Specialist, Application Support, Junior Systems Analyst.\n\n"
+        "Search Sources & Verification:\n"
+        "- Search: LinkedIn, Computrabajo, Aldaba, Indeed, Get on Board, and official company portals.\n"
+        "- Verify: Must be active, verifiable postings with valid application URLs. Consolidate duplicates. Never fabricate listings.\n\n"
+        "Evaluation & Salary Rules:\n"
+        "- Minimum target: RD$30,000/month. Set salary_below_30k=true ONLY if confirmed < RD$30,000; "
+        "false if >= RD$30,000; null if undisclosed/unverified. Do not exclude unlisted salaries.\n"
+        "- Recommendation values: 'Apply', 'Consider applying', or 'Low priority'.\n"
+        "- Rank output by software relevance, candidate fit, and career growth potential.\n"
+        "- Return an empty list if no verified active positions match."
+    )
 
     last_error = None
 
     for model_name in FALLBACK_MODELS:
         try:
             print(f"🤖 Intentando consulta con el modelo: {model_name}...")
-            interaction = client.interactions.create(
+            response = client.models.generate_content(
                 model=model_name,
-                input=prompt,
-                tools=[{"type": "google_search"}],
-                response_format={
-                    "type": "text",
-                    "mime_type": "application/json",
-                    "schema": JobList.model_json_schema(),
-                },
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    response_mime_type="application/json",
+                    response_schema=JobList,
+                    temperature=0.1,
+                ),
             )
 
-            if not interaction.output_text:
+            if not response.text:
                 raise ValueError(f"El modelo {model_name} devolvió una respuesta vacía.")
 
-            parsed = JobList.model_validate_json(interaction.output_text)
+            parsed = JobList.model_validate_json(response.text)
             print(f"✅ Respuesta obtenida exitosamente con {model_name}.")
             return parsed.vacancies
 
         except Exception as e:
             last_error = e
-            print(f"⚠️ Falló el modelo {model_name} (cuota agotada o sin respuesta): {e}")
-            print("🔄 Cambiando al siguiente modelo disponible...")
-            time.sleep(2)
+            print(f"⚠️ Falló el modelo {model_name}: {e}")
+            print("⏳ Esperando 15 segundos para liberar la ventana de cuota...")
+            time.sleep(15)
 
     raise RuntimeError(
         f"❌ Todos los modelos de Gemini fallaron. Último error: {last_error}"
@@ -93,7 +91,6 @@ def search_jobs(api_key: str) -> list[JobPosting]:
 
 # --- 3. GESTION DE ESTADO (DEDUPLICACION) ---
 def filter_new_vacancies(vacancies: list[JobPosting], history_file="seen_jobs.json") -> list[JobPosting]:
-    # Si existe el archivo, cargamos las URLs ya vistas
     if os.path.exists(history_file):
         try:
             with open(history_file, "r", encoding="utf-8") as f:
@@ -105,7 +102,6 @@ def filter_new_vacancies(vacancies: list[JobPosting], history_file="seen_jobs.js
 
     new_items = [job for job in vacancies if job.url and job.url not in seen_urls]
 
-    # Actualizamos el historial sumando las nuevas URLs
     if new_items:
         seen_urls.update(job.url for job in new_items)
         with open(history_file, "w", encoding="utf-8") as f:
@@ -119,7 +115,6 @@ def send_email_alert(new_jobs: list[JobPosting]):
     receiver = os.environ["EMAIL_RECEIVER"]
     app_password = os.environ["EMAIL_APP_PASSWORD"]
 
-    # Construccion de plantilla HTML limpia
     rows = []
     for job in new_jobs:
         alert_tag = (
@@ -154,7 +149,6 @@ def send_email_alert(new_jobs: list[JobPosting]):
     msg["To"] = receiver
     msg.attach(MIMEText(html_body, "html"))
 
-    # Conexion SSL estandar a Gmail
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(sender, app_password)
         server.sendmail(sender, receiver, msg.as_string())
