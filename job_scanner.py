@@ -38,74 +38,25 @@ def search_jobs(api_key: str) -> list[JobPosting]:
     client = genai.Client(api_key=api_key)
 
     prompt = (
-        "Search for current, active job vacancies in the Dominican Republic, "
-        "prioritizing Santo Domingo and remote or hybrid roles open to candidates "
-        "residing in the Dominican Republic. "
-
-        "The candidate is an ITLA Software Development student with completed "
-        "coursework, practical exposure to Python, FastAPI, PostgreSQL, Docker, "
-        "Power Platform, SharePoint, Power Apps, Power Automate, and software "
-        "development projects. The candidate can leverage AI tools for coding, "
-        "debugging, automation, learning, and productivity. Consider AI-assisted "
-        "development a competitive advantage, without assuming it replaces "
-        "technical fundamentals or professional experience. "
-
-        "PRIORITY 1 - SOFTWARE DEVELOPMENT: "
-        "Junior Software Developer, Software Engineer, Backend Developer, "
-        "Python Developer, Full Stack Developer, Web Developer, API Developer, "
-        "Application Developer, Odoo Developer, ERP Developer, Integration Developer. "
-
-        "PRIORITY 2 - AUTOMATION, DATA, AND AI: "
-        "Automation Developer, Python Scripting Developer, RPA Developer, "
-        "Power Platform Developer, Workflow Automation Specialist, "
-        "AI Automation Developer, Junior AI Developer, Junior Data Engineer, "
-        "Technical Data Analyst, QA Automation Engineer. "
-
-        "PRIORITY 3 - ADJACENT TECHNOLOGY ROLES: "
-        "Application Support Analyst, Software Implementation Specialist, "
-        "Technical Application Specialist, ERP/CRM Implementation Consultant, "
-        "Junior Systems Analyst, Technical Support Engineer, IT Specialist, "
-        "and entry-level infrastructure or networking positions when they "
-        "offer relevant technical experience or career growth. "
-
-        "Target entry-level, junior, trainee, associate, internship, and "
-        "early-career positions. Include vacancies requesting 1-3 years "
-        "of experience if the candidate could reasonably qualify through "
-        "projects, internships, coursework, or practical skills. "
-        "Do not automatically exclude positions requiring experience. "
-
-        "The preferred minimum salary is RD$30,000 monthly. "
-        "Set salary_below_30k to true only when the confirmed monthly salary "
-        "is below RD$30,000; false when it is RD$30,000 or higher; "
-        "and null when salary is unknown or unverified. "
-        "Never invent salary information or exclude vacancies solely because "
-        "salary is not disclosed. "
-
-        "Search reputable sources including LinkedIn Jobs, Computrabajo, "
-        "Aldaba, Indeed, Get on Board, Wellfound, official company career pages, "
-        "and other reliable Dominican or international job boards. "
-
-        "Verify that each vacancy is active, has a real employer, and has "
-        "a valid application URL. Prefer official employer application links. "
-        "Do not fabricate vacancies, links, salaries, or requirements. "
-        "Exclude expired, duplicate, or unverifiable listings. "
-
-        "For each vacancy, return: job_title, company, location, "
-        "work_modality, job_category, seniority, experience_required, "
-        "salary, salary_below_30k, publication_date, source, application_url, "
-        "active_status, candidate_fit, fit_reason, main_requirements, "
-        "missing_skills, and recommendation. "
-
-        "Set recommendation to Apply, Consider applying, or Low priority. "
-        "Rank results by software development relevance, realistic candidate fit, "
-        "salary, active status, and career growth potential. "
-
-        "Avoid duplicates across sources. If the same vacancy appears "
-        "on multiple platforms, consolidate it into one entry. "
-
-        "Return only verified active vacancies in the expected structured "
-        "output format. If no active vacancies are confirmed, return an empty list."
-    )
+    "Target: Active software and technology job vacancies in Dominican Republic "
+    "(priority: Santo Domingo, Remote/Hybrid open to DR residents).\n"
+    "Candidate profile: Junior/Entry-level developer with skills in Python, FastAPI, "
+    "PostgreSQL, Docker, Power Platform, and AI-assisted tooling. "
+    "Accept roles requiring 0 to 3 years experience (evaluate fit via projects/skills).\n\n"
+    "Target Roles by Priority:\n"
+    "- P1 (Software Dev): Junior Software/Backend/Python/Full Stack/Web/API Developer, Odoo/ERP/Integration Dev.\n"
+    "- P2 (Automation/Data/AI): Automation Dev, RPA, Power Platform Specialist, QA Automation, Junior Data/AI Eng.\n"
+    "- P3 (Adjacent IT): Implementation Specialist, Application Support, Junior Systems Analyst.\n\n"
+    "Search Sources & Verification:\n"
+    "- Search: LinkedIn, Computrabajo, Aldaba, Indeed, Get on Board, and official company portals.\n"
+    "- Verify: Must be active, verifiable postings with valid application URLs. Consolidate duplicates. Never fabricate listings.\n\n"
+    "Evaluation & Salary Rules:\n"
+    "- Minimum target: RD$30,000/month. Set salary_below_30k=true ONLY if confirmed < RD$30,000; "
+    "false if >= RD$30,000; null if undisclosed/unverified. Do not exclude unlisted salaries.\n"
+    "- Recommendation values: 'Apply', 'Consider applying', or 'Low priority'.\n"
+    "- Rank output by software relevance, candidate fit, and career growth potential.\n"
+    "- Return an empty list if no verified active positions match."
+)
 
     last_error = None
 
