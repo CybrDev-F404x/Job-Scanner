@@ -1,4 +1,5 @@
 import os
+import re
 import html
 import json
 import time
@@ -6,6 +7,7 @@ import smtplib
 from typing import Optional
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import requests
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -15,6 +17,43 @@ FALLBACK_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it",
+]
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "es-DO,es;q=0.9,en;q=0.8",
+}
+
+LINKEDIN_QUERIES = [
+    "Python OR Backend OR FastAPI OR Django",
+    "Software Developer OR Desarrollador OR Full Stack",
+    "Analista de Datos OR QA OR Odoo OR Power Platform",
+]
+
+COMPUTRABAJO_URLS = [
+    "https://do.computrabajo.com/trabajo-de-desarrollador-en-santo-domingo",
+    "https://do.computrabajo.com/trabajo-de-programador-en-santo-domingo",
+    "https://do.computrabajo.com/trabajo-de-analista-de-datos-en-santo-domingo",
+]
+
+EXCLUDE_TITLE_KEYWORDS = [
+    "cctv", "camaras", "cámaras", "chofer", "vendedor", "contable", "conserje",
+    "senior", "sr.", "sr ", "lead", "principal", "staff", "director", "gerente",
+]
+
+TECH_KEYWORDS = [
+    "Python", "FastAPI", "Django", "Flask", "SQL", "PostgreSQL", "MySQL",
+    "SQL Server", "Oracle", "Docker", "Git", "Linux", "AWS", "Azure",
+    "JavaScript", "TypeScript", "React", "Angular", "Vue", "Node.js",
+    "Next.js", "HTML", "CSS", "REST", "API", "GraphQL", "Odoo", "ERP",
+    "Power Platform", "Power BI", "Power Apps", "Power Automate", "SharePoint",
+    "RPA", "Selenium", "Cypress", "Playwright", "QA", "Testing", "Scrum",
+    "C#", ".NET", "Java", "Spring", "PHP", "Laravel", "Go", "Kotlin", "ETL",
 ]
 
 # --- 1. MODELOS DE DATOS ---
@@ -31,103 +70,278 @@ class JobPosting(BaseModel):
 class JobList(BaseModel):
     vacancies: list[JobPosting]
 
-# --- 2. CONSULTA A GEMINI EN DOS PASOS (ANTI-429) ---
-def search_jobs(api_key: str) -> list[JobPosting]:
-    client = genai.Client(api_key=api_key)
+# --- 2. EXTRACCIÓN WEB DIRECTA DE PORTALES EN RD + ESTRUCTURADO CON FALLBACK ---
+def clean_html_text(raw: str) -> str:
+    no_tags = re.sub(r"<[^>]+>", " ", raw or "")
+    return html.unescape(re.sub(r"\s+", " ", no_tags)).strip()
 
-    # 1. Prompt de Búsqueda Web (conciso para el motor de búsqueda)
-    search_prompt = (
-        "Search for active software developer and IT job vacancies in the Dominican Republic "
-        "(prioritize Santo Domingo and Remote/Hybrid open to DR candidates). "
-        "Focus on Junior, Entry-Level, and Early-Career roles (0-3 years experience) in: "
-        "Python, Backend, Full Stack, Web, Odoo/ERP, Automation, QA, and Data. "
-        "Check LinkedIn, Computrabajo, Aldaba, Indeed, and local tech boards. "
-        "For each position found, list: job title, company, location/modality, "
-        "salary (note if confirmed under RD$30,000/month), requirements, tech stack, and direct application URL. "
-        "Exclude expired or fabricated postings. If no active vacancies are found, respond exactly: NO_JOBS_FOUND."
-    )
+def fetch_linkedin_rd_jobs() -> list[dict]:
+    api_url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+    items: list[dict] = []
+    seen_urls: set[str] = set()
 
-    print("🔎 Paso 1: Ejecutando búsqueda web con Google Search...")
-    raw_search_text = ""
-    last_error = None
-
-    for model_name in FALLBACK_MODELS:
+    for kw in LINKEDIN_QUERIES:
         try:
-            print(f"🤖 Buscando en la web con {model_name}...")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=search_prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    temperature=0.2,
-                ),
+            resp = requests.get(
+                api_url,
+                params={
+                    "keywords": kw,
+                    "location": "Dominican Republic",
+                    "f_TPR": "r604800",  # Últimos 7 días
+                },
+                headers=HEADERS,
+                timeout=12,
             )
-            if response.text and response.text.strip():
-                raw_search_text = response.text.strip()
-                print(f"✅ Búsqueda web completada con {model_name}.")
-                break
-            raise ValueError(f"El modelo {model_name} devolvió una respuesta vacía.")
+            if resp.status_code != 200:
+                continue
+
+            cards = re.findall(r"<li[^>]*>(.*?)</li>", resp.text, re.S)
+            for card in cards:
+                t_match = re.search(r'base-search-card__title">\s*(.*?)\s*</h3>', card, re.S)
+                c_match = re.search(
+                    r'base-search-card__subtitle">\s*(?:<a[^>]*>)?\s*(.*?)\s*(?:</a>)?\s*</h4>',
+                    card,
+                    re.S,
+                )
+                loc_match = re.search(r'job-search-card__location">\s*(.*?)\s*</span>', card, re.S)
+                url_match = re.search(r'href="(https://[^"]+/jobs/view/[^?"]+)', card)
+
+                if not t_match or not url_match:
+                    continue
+
+                title = clean_html_text(t_match.group(1))
+                company = clean_html_text(c_match.group(1)) if c_match else "Empresa en LinkedIn RD"
+                location = clean_html_text(loc_match.group(1)) if loc_match else "República Dominicana"
+                url = url_match.group(1).strip()
+
+                if url in seen_urls:
+                    continue
+                if any(bad in title.lower() for bad in EXCLUDE_TITLE_KEYWORDS):
+                    continue
+
+                seen_urls.add(url)
+                items.append({
+                    "title": title,
+                    "company": company,
+                    "location": location,
+                    "salary": "No especificado en el anuncio",
+                    "url": url,
+                    "source": "LinkedIn RD",
+                })
         except Exception as e:
-            last_error = e
-            print(f"⚠️ Falló búsqueda en {model_name}: {e}")
-            print("⏳ Esperando 10 segundos...")
-            time.sleep(10)
+            print(f"⚠️ Aviso consultando LinkedIn RD ({kw[:25]}...): {e}")
 
-    if not raw_search_text:
-        if last_error is not None:
-            raise RuntimeError(
-                f"❌ Todos los modelos de Gemini fallaron en el Paso 1. Último error: {last_error}"
+    return items
+
+def fetch_computrabajo_rd_jobs() -> list[dict]:
+    items: list[dict] = []
+    seen_urls: set[str] = set()
+
+    for page_url in COMPUTRABAJO_URLS:
+        try:
+            resp = requests.get(page_url, headers=HEADERS, timeout=12)
+            if resp.status_code != 200:
+                continue
+
+            articles = re.findall(
+                r'<article[^>]*class="[^"]*box_offer[^"]*"[^>]*>(.*?)</article>',
+                resp.text,
+                re.S,
             )
-        print("ℹ️ No se obtuvo texto de búsqueda.")
+            for art in articles:
+                link_m = re.search(
+                    r'<a[^>]*class="[^"]*js-o-link[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                    art,
+                    re.S,
+                )
+                if not link_m:
+                    continue
+
+                rel_href = link_m.group(1).split("#")[0].strip()
+                url = (
+                    rel_href
+                    if rel_href.startswith("http")
+                    else f"https://do.computrabajo.com{rel_href}"
+                )
+                title = clean_html_text(link_m.group(2))
+
+                if url in seen_urls:
+                    continue
+                if any(bad in title.lower() for bad in EXCLUDE_TITLE_KEYWORDS):
+                    continue
+
+                comp_m = re.search(
+                    r"offer-grid-article-company-url[^>]*>(.*?)</a>", art, re.S
+                )
+                if not comp_m:
+                    comp_m = re.search(
+                        r'<p[^>]*class="[^"]*dFlex[^"]*"[^>]*>(.*?)</p>', art, re.S
+                    )
+                company = (
+                    clean_html_text(comp_m.group(1))
+                    if comp_m
+                    else "Empresa en Computrabajo RD"
+                )
+
+                loc_m = re.search(
+                    r'<p[^>]*class="fs16 fc_base mt5"[^>]*>\s*<span[^>]*>(.*?)</span>',
+                    art,
+                    re.S,
+                )
+                location = (
+                    clean_html_text(loc_m.group(1))
+                    if loc_m
+                    else "Santo Domingo, RD"
+                )
+
+                sal_m = re.search(
+                    r'class="icon i_salary"[^>]*></span>\s*([^<]+)', art, re.S
+                )
+                salary = (
+                    f"RD$ {clean_html_text(sal_m.group(1))}"
+                    if sal_m
+                    else "No especificado en el anuncio"
+                )
+
+                seen_urls.add(url)
+                items.append({
+                    "title": title,
+                    "company": company,
+                    "location": location,
+                    "salary": salary,
+                    "url": url,
+                    "source": "Computrabajo RD",
+                })
+        except Exception as e:
+            print(f"⚠️ Aviso consultando Computrabajo RD ({page_url}): {e}")
+
+    return items
+
+def detect_technologies(text: str) -> str:
+    found = []
+    for tech in TECH_KEYWORDS:
+        pattern = r"(?<!\w)" + re.escape(tech) + r"(?!\w)"
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            found.append(tech)
+    return ", ".join(found) if found else "Desarrollo de Software / TI"
+
+def parse_results_locally(raw_items: list[dict]) -> list[JobPosting]:
+    print("🛠️ Aplicando extractor estructurado local (respaldo anti-429)...")
+    postings: list[JobPosting] = []
+
+    for item in raw_items:
+        title = item.get("title", "")
+        company = item.get("company", "No especificada")
+        location = item.get("location", "Santo Domingo, RD")
+        salary = item.get("salary", "No especificado en el anuncio")
+        url = item.get("url", "")
+        source = item.get("source", "Portal de Empleo RD")
+
+        combined_text = f"{title} {company} {location}"
+        if re.search(r"\b(remoto|remote)\b", combined_text, flags=re.IGNORECASE) and "remoto" not in location.lower():
+            location = f"{location} (Remoto)"
+
+        salary_below_30k = None
+        if salary and salary != "No especificado en el anuncio":
+            num_match = re.search(r"([\d,]+(?:\.\d+)?)", salary)
+            if num_match:
+                val = float(num_match.group(1).replace(",", ""))
+                if val > 0:
+                    salary_below_30k = val < 30000
+
+        techs = detect_technologies(f"{title} {url}")
+        reqs = f"Vacante activa en {source} para el rol de {title}. Revisar enlace para detalles y postulación."
+
+        postings.append(
+            JobPosting(
+                title=title,
+                company=company,
+                location=location,
+                salary=salary,
+                salary_below_30k=salary_below_30k,
+                experience_requirements=reqs,
+                key_technologies=techs,
+                url=url,
+            )
+        )
+
+    return postings
+
+def search_jobs(api_key: str) -> list[JobPosting]:
+    print("🔎 Paso 1: Obteniendo vacantes activas en LinkedIn RD y Computrabajo RD...")
+    raw_items = fetch_linkedin_rd_jobs() + fetch_computrabajo_rd_jobs()
+
+    # Deduplicar por URL y por (título, empresa) manteniendo orden
+    unique_items: list[dict] = []
+    seen: set[str] = set()
+    seen_title_company: set[tuple[str, str]] = set()
+    for item in raw_items:
+        u = item["url"]
+        tc_key = (item["title"].lower().strip(), item["company"].lower().strip())
+        if u not in seen and tc_key not in seen_title_company:
+            seen.add(u)
+            seen_title_company.add(tc_key)
+            unique_items.append(item)
+
+    print(f"✅ Búsqueda web completada: {len(unique_items)} vacantes activas encontradas.")
+    if not unique_items:
         return []
 
-    if raw_search_text == "NO_JOBS_FOUND" or (
-        len(raw_search_text) < 50 and "NO_JOBS_FOUND" in raw_search_text
-    ):
-        print("ℹ️ No se detectaron vacantes nuevas en la web.")
-        return []
+    raw_search_text = json.dumps(unique_items, ensure_ascii=False, indent=2)
 
-    # Breve pausa para reiniciar la ventana por minuto
-    time.sleep(5)
-
-    # 2. Paso 2: Conversión a JSON Estricto (Sin búsqueda web = 0 riesgo de 429)
-    print("📋 Paso 2: Estructurando resultados en formato JSON con Pydantic...")
+    # Paso 2: Intentar estructurar y enriquecer con Gemini (sin tool google_search = mucho menor consumo de cuota)
+    print("📋 Paso 2: Estructurando resultados en formato JSON con Gemini + Pydantic...")
+    client = genai.Client(api_key=api_key)
     parse_prompt = (
-        "Extract the job vacancies from the text below into the requested JSON schema.\n"
+        "Convert and enrich the Dominican Republic software/IT job vacancies below into the requested JSON schema.\n"
         "Rules:\n"
+        "- Keep only software, development, data, QA, automation, ERP/Odoo, or IT roles.\n"
         "- Set salary_below_30k to true ONLY if confirmed monthly salary is under RD$30,000; "
         "false if >= RD$30,000; null if undisclosed.\n"
-        "- Only include positions that have a real company and a verifiable application link.\n\n"
-        f"Jobs raw data:\n{raw_search_text}"
+        "- Infer key_technologies and a concise Spanish summary for experience_requirements from the job title and URL slug.\n"
+        "- Preserve the exact URL from each item.\n\n"
+        f"Raw vacancies:\n{raw_search_text}"
     )
 
-    parse_error = None
     for model_name in FALLBACK_MODELS:
         try:
             print(f"🤖 Estructurando JSON con {model_name}...")
-            parse_response = client.models.generate_content(
-                model=model_name,
-                contents=parse_prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=JobList,
-                    temperature=0.1,
-                ),
-            )
-            if not parse_response.text:
-                raise ValueError(f"El modelo {model_name} devolvió un JSON vacío.")
-            parsed = JobList.model_validate_json(parse_response.text)
-            print(f"✅ JSON estructurado con éxito usando {model_name}.")
-            return parsed.vacancies
-        except Exception as e:
-            parse_error = e
-            print(f"⚠️ Error al estructurar a JSON con {model_name}: {e}")
-            print("⏳ Esperando 5 segundos...")
-            time.sleep(5)
+            if model_name.startswith("gemma-"):
+                schema_hint = json.dumps(JobList.model_json_schema(), ensure_ascii=False)
+                parse_response = client.models.generate_content(
+                    model=model_name,
+                    contents=f"{parse_prompt}\n\nRespond ONLY with valid JSON matching this schema:\n{schema_hint}",
+                    config=types.GenerateContentConfig(temperature=0.1),
+                )
+            else:
+                parse_response = client.models.generate_content(
+                    model=model_name,
+                    contents=parse_prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=JobList,
+                        temperature=0.1,
+                    ),
+                )
 
-    raise RuntimeError(
-        f"❌ Todos los modelos fallaron al estructurar el JSON en el Paso 2. Último error: {parse_error}"
-    )
+            if not parse_response.text:
+                raise ValueError(f"El modelo {model_name} devolvió una respuesta vacía.")
+
+            clean_json = parse_response.text.strip()
+            if clean_json.startswith("```"):
+                clean_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean_json, flags=re.DOTALL).strip()
+
+            parsed = JobList.model_validate_json(clean_json)
+            if parsed.vacancies:
+                print(f"✅ JSON estructurado con éxito usando {model_name}.")
+                return parsed.vacancies
+        except Exception as e:
+            print(f"⚠️ Falló {model_name}: {e}")
+            time.sleep(2)
+
+    print("⚠️ Cuota de API Gemini agotada en todos los modelos. Usando estructurado local de respaldo...")
+    return parse_results_locally(unique_items)
+
 
 # --- 3. GESTION DE ESTADO (DEDUPLICACION) ---
 def load_seen_urls(history_file="seen_jobs.json") -> set[str]:
@@ -221,7 +435,7 @@ if __name__ == "__main__":
 
     print("🔎 Buscando vacantes activas...")
     all_jobs = search_jobs(api_key)
-    print(f"Total devuelto por Gemini: {len(all_jobs)}")
+    print(f"Total de vacantes procesadas: {len(all_jobs)}")
 
     new_jobs = filter_new_vacancies(all_jobs)
 
@@ -232,3 +446,4 @@ if __name__ == "__main__":
         print("✅ Correo enviado e historial actualizado con éxito.")
     else:
         print("🤫 No hay vacantes nuevas o ya fueron notificadas. Finalizando en silencio.")
+
